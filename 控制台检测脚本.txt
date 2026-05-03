@@ -1,0 +1,9 @@
+const originalFetch = window.fetch;
+window.fetch = function(...args) {
+    console.group('Fetch请求:', args[0]);
+    console.log('调用栈:');
+    console.trace(); 
+    console.groupEnd();
+    return originalFetch.apply(this, args);
+};
+console.log('Fetch劫持已启动，会打印每个请求的调用栈喵～');
