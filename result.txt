@@ -1,0 +1,15 @@
+
+C:\mypy\recog_ai\imgs\flaw\result\round_0002_edge_mask.jpg，红椿
+========== 2026-05-03 20:14:09 ==========
+图片: C:\mypy\recog_ai\imgs\flaw\result\round_0002_edge_mask.jpg
+=== 科 ===
+  Meliaceae (5.36%)
+=== 属 ===
+  Toona (5.36%)
+=== 种 ===
+  Toona ciliata (5.36%)
+  Taxodium distichum (5.12%)
+  Idesia polycarpa (5.09%)
+  Pterostyrax psilophyllus (2.76%)
+  Drynaria roosii (2.23%)
+
