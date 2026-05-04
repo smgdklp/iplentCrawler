@@ -7,7 +7,12 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-
+/// <summary>
+/// 创立实例
+/// LogIt(路径.txt）#这里莫名其妙呼，可选。。。。。
+/// Work(string sourcePath, string targetSavePath, string targetLogPath = null)
+/// Closewed释放内存。。。。。
+/// </summary>
 class Crawler
 {
     public string savePath = @"C:\myc\test\result.json";
