@@ -10,24 +10,32 @@ using System.Threading.Tasks;
 
 class Crawler
 {
-    public string savePath = @"C:\myc\test\result.txt";
+    public string savePath = @"C:\myc\test\result.json";
     public string web = "https://www.iplant.cn/stu/20k";
-    public RecognitionResult LastResult { get; private set; } = new();
-
+    public string logPath = null;  // 日志路径，为null时输出到控制台
+    
     private IBrowser browser;
     private IPage page;
     private IPlaywright playwright;
 
-    // 识别结果数据模型（增强版）
-    public class RecognitionResult
+    // 识别结果数据模型（改为struct）
+    public struct RecognitionResult
     {
-        public List<(string Name, double Score)> Families { get; set; } = new();
-        public List<(string Name, double Score)> Genera { get; set; } = new();
-        public List<(string Name, double Score)> Species { get; set; } = new();
-        
-        // 新增字段
-        public bool Valid { get; set; } = true;
-        public string Wrong { get; set; } = "";
+        public List<(string Name, double Score)> Families { get; set; }
+        public List<(string Name, double Score)> Genera { get; set; }
+        public List<(string Name, double Score)> Species { get; set; }
+        public bool Valid { get; set; }
+        public string Wrong { get; set; }
+
+        // 构造函数
+        public RecognitionResult(bool valid, string wrong = "")
+        {
+            Families = new List<(string, double)>();
+            Genera = new List<(string, double)>();
+            Species = new List<(string, double)>();
+            Valid = valid;
+            Wrong = wrong;
+        }
 
         public override string ToString()
         {
@@ -40,24 +48,57 @@ class Crawler
         }
         
         // 转为JSON对象（用于序列化）
-        public object ToJsonObject()
+        public object ToJsonObject(string imagePath)
         {
             return new
             {
+                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss"),
+                image = imagePath,
                 valid = Valid,
                 wrong = Wrong,
                 families = Families.Select(f => new { name = f.Name, score = f.Score }),
                 genera = Genera.Select(g => new { name = g.Name, score = g.Score }),
-                species = Species.Select(s => new { name = s.Name, score = s.Score }),
-                timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss")
+                species = Species.Select(s => new { name = s.Name, score = s.Score })
             };
+        }
+    }
+
+    // 设置日志路径
+    public void LogIt(string path)
+    {
+        logPath = path;
+        // 确保日志目录存在
+        string directory = Path.GetDirectoryName(logPath);
+        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+            Directory.CreateDirectory(directory);
+    }
+
+    // 日志写入（如果logPath有效则写文件，否则写控制台）
+    private void WriteLog(string message, bool isError = false)
+    {
+        string logMessage = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} - {message}";
+        
+        if (!string.IsNullOrEmpty(logPath))
+        {
+            try
+            {
+                File.AppendAllText(logPath, logMessage + Environment.NewLine, Encoding.UTF8);
+            }
+            catch { /* 日志写入失败静默处理 */ }
+        }
+        else
+        {
+            if (isError)
+                Console.Error.WriteLine(logMessage);
+            else
+                Console.WriteLine(logMessage);
         }
     }
 
     // 初始化浏览器
     public async Task Initweb()
     {
-        Console.WriteLine("[Init] 启动浏览器...");
+        WriteLog("[Init] 启动浏览器...");
         playwright = await Playwright.CreateAsync();
         browser = await playwright.Chromium.LaunchAsync(new BrowserTypeLaunchOptions
         {
@@ -65,9 +106,21 @@ class Crawler
             Channel = "msedge"
         });
         page = await browser.NewPageAsync();
-        Console.WriteLine("[Init] 加载网页...");
+        WriteLog("[Init] 加载网页...");
         await page.GotoAsync(web, new PageGotoOptions { WaitUntil = WaitUntilState.NetworkIdle });
-        Console.WriteLine("[Init] 就绪\n");
+        WriteLog("[Init] 就绪\n");
+        
+        // 确保保存路径的目录存在
+        string saveDir = Path.GetDirectoryName(savePath);
+        if (!string.IsNullOrEmpty(saveDir) && !Directory.Exists(saveDir))
+            Directory.CreateDirectory(saveDir);
+        
+        // 如果JSON文件不存在，创建空文件
+        if (!File.Exists(savePath))
+        {
+            File.WriteAllText(savePath, "", Encoding.UTF8);
+            WriteLog($"[Init] 已创建保存文件: {savePath}");
+        }
     }
 
     // 检查浏览器状态
@@ -75,18 +128,18 @@ class Crawler
     {
         if (page == null)
         {
-            Console.WriteLine("[Check] 浏览器未初始化");
+            WriteLog("[Check] 浏览器未初始化", true);
             return false;
         }
         try
         {
             string title = await page.TitleAsync();
-            Console.WriteLine($"[Check] 浏览器正常，标题: {title}\n");
+            WriteLog($"[Check] 浏览器正常，标题: {title}");
             return true;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Check] 浏览器异常: {ex.Message}");
+            WriteLog($"[Check] 浏览器异常: {ex.Message}", true);
             return false;
         }
     }
@@ -94,9 +147,9 @@ class Crawler
     // 提取所有识别结果（科、属、种及置信度）
     private async Task<RecognitionResult> ExtractAllResults()
     {
-        var result = new RecognitionResult();
+        var result = new RecognitionResult(true);
 
-        if (page == null) return result;
+        if (page == null) return new RecognitionResult(false, "页面未初始化");
 
         try
         {
@@ -172,32 +225,30 @@ class Crawler
         return validExtensions.Contains(ext);
     }
 
-    // 接受图片完成检测
-    public async Task Reco(string newPath)
+    // 接受图片完成检测（返回新的结果对象，不缓存）
+    public async Task<RecognitionResult> Reco(string newPath)
     {
-        Console.WriteLine($"[Reco] 开始识别: {Path.GetFileName(newPath)}");
+        WriteLog($"[Reco] 开始识别: {Path.GetFileName(newPath)}");
 
         if (!File.Exists(newPath))
         {
-            Console.WriteLine($"[Reco] 文件不存在: {newPath}");
-            LastResult = new RecognitionResult { Valid = false, Wrong = "文件不存在" };
-            return;
+            WriteLog($"[Reco] 文件不存在: {newPath}", true);
+            return new RecognitionResult(false, "文件不存在");
         }
         
         if (page == null)
         {
-            Console.WriteLine("[Reco] 浏览器未初始化");
-            LastResult = new RecognitionResult { Valid = false, Wrong = "浏览器未初始化" };
-            return;
+            WriteLog("[Reco] 浏览器未初始化", true);
+            return new RecognitionResult(false, "浏览器未初始化");
         }
 
         // 检查文件扩展名
         if (!IsValidImageExtension(newPath))
         {
             string ext = Path.GetExtension(newPath);
-            LastResult = new RecognitionResult { Valid = false, Wrong = $"后缀错了（不支持{ext}，仅支持.jpg/.jpeg/.png/.pjpeg/.jfif）" };
-            Console.WriteLine($"[Reco] {LastResult.Wrong}");
-            return;
+            string error = $"后缀错了（不支持{ext}，仅支持.jpg/.jpeg/.png/.pjpeg/.jfif）";
+            WriteLog($"[Reco] {error}", true);
+            return new RecognitionResult(false, error);
         }
 
         try
@@ -211,7 +262,7 @@ class Crawler
                 await uploading.First.WaitForAsync(new LocatorWaitForOptions { State = WaitForSelectorState.Detached, Timeout = 30000 });
 
             // 等待结果变化（等待结果区域出现数据）
-            Console.WriteLine("[Reco] 等待AI识别...");
+            WriteLog("[Reco] 等待AI识别...");
             await page.WaitForFunctionAsync(@"
                 () => {
                     const fam = document.querySelector('.stugroup-item-fam');
@@ -222,148 +273,72 @@ class Crawler
             ", new PageWaitForFunctionOptions { Timeout = 60000 });
 
             // 提取所有识别结果
-            LastResult = await ExtractAllResults();
-            Console.WriteLine($"[Reco] 识别成功!");
-            Console.WriteLine(LastResult.ToString());
+            var result = await ExtractAllResults();
+            WriteLog($"[Reco] 识别成功!");
+            WriteLog(result.ToString());
+            return result;
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Reco] 识别失败: {ex.Message}");
-            LastResult = new RecognitionResult { Valid = false, Wrong = $"识别过程异常: {ex.Message}" };
+            WriteLog($"[Reco] 识别失败: {ex.Message}", true);
+            return new RecognitionResult(false, $"识别过程异常: {ex.Message}");
         }
     }
 
-    // 保存结果（支持txt和json）
-    public async Task SaveResult(string imagePath, string customSavePath = null)
+    // 保存结果到JSON（直接追加，不格式化）
+    public async Task SaveResult(string imagePath, RecognitionResult result)
     {
-        string targetPath = customSavePath ?? savePath;
-        
         try
         {
-            string directory = Path.GetDirectoryName(targetPath);
+            // 确保目录存在
+            string directory = Path.GetDirectoryName(savePath);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
                 Directory.CreateDirectory(directory);
             
-            string extension = Path.GetExtension(targetPath).ToLower();
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+            // 生成JSON行（不格式化，直接一行）
+            var jsonObj = result.ToJsonObject(imagePath);
+            string jsonLine = JsonSerializer.Serialize(jsonObj, new JsonSerializerOptions { WriteIndented = false });
             
-            if (extension == ".json")
-            {
-                // JSON格式保存
-                await SaveAsJson(targetPath, imagePath, timestamp);
-            }
-            else
-            {
-                // TXT格式保存（默认）
-                await SaveAsTxt(targetPath, imagePath, timestamp);
-            }
+            // 追加到文件
+            await File.AppendAllLinesAsync(savePath, new[] { jsonLine }, Encoding.UTF8);
             
-            Console.WriteLine($"[Save] 结果已保存到: {targetPath}");
+            WriteLog($"[Save] 结果已保存到: {savePath}");
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"[Save] 保存失败: {ex.Message}");
-        }
-    }
-    
-    private async Task SaveAsTxt(string filePath, string imagePath, string timestamp)
-    {
-        var lines = new List<string>
-        {
-            $"\n========== {timestamp} ==========",
-            $"图片: {imagePath}",
-            $"有效性: {(LastResult.Valid ? "✅ 有效" : "❌ 无效")}"
-        };
-        
-        if (LastResult.Valid)
-        {
-            lines.Add("=== 科 ===");
-            foreach (var fam in LastResult.Families)
-                lines.Add($"  {fam.Name} ({fam.Score:F2}%)");
-            
-            lines.Add("=== 属 ===");
-            foreach (var gen in LastResult.Genera)
-                lines.Add($"  {gen.Name} ({gen.Score:F2}%)");
-            
-            lines.Add("=== 种 ===");
-            foreach (var sp in LastResult.Species)
-                lines.Add($"  {sp.Name} ({sp.Score:F2}%)");
-        }
-        else
-        {
-            lines.Add($"错误类型: {LastResult.Wrong}");
-        }
-        
-        lines.Add("");
-        await File.AppendAllLinesAsync(filePath, lines, Encoding.UTF8);
-    }
-    
-    private async Task SaveAsJson(string filePath, string imagePath, string timestamp)
-    {
-        var record = new
-        {
-            timestamp = timestamp,
-            image = imagePath,
-            valid = LastResult.Valid,
-            wrong = LastResult.Wrong,
-            families = LastResult.Families.Select(f => new { name = f.Name, score = f.Score }),
-            genera = LastResult.Genera.Select(g => new { name = g.Name, score = g.Score }),
-            species = LastResult.Species.Select(s => new { name = s.Name, score = s.Score })
-        };
-        
-        string jsonLine = JsonSerializer.Serialize(record, new JsonSerializerOptions { WriteIndented = false });
-        
-        // JSON Lines 格式（每行一个JSON对象，便于追加和分析）
-        await File.AppendAllLinesAsync(filePath, new[] { jsonLine }, Encoding.UTF8);
-    }
-
-    // 确保保存路径的文件存在（如果是.json则创建空文件，如果是.txt则创建空文件）
-    private void EnsureSaveFileExists(string savePath)
-    {
-        string directory = Path.GetDirectoryName(savePath);
-        if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
-            Directory.CreateDirectory(directory);
-        
-        if (!File.Exists(savePath))
-        {
-            string extension = Path.GetExtension(savePath).ToLower();
-            if (extension == ".json")
-            {
-                // 创建空JSON文件（写入空数组作为起始，或者直接空文件）
-                File.WriteAllText(savePath, "", Encoding.UTF8);
-            }
-            else
-            {
-                // 创建空TXT文件，写入表头
-                File.WriteAllText(savePath, "植物识别结果记录\n生成时间: " + DateTime.Now + "\n" + new string('=', 50) + "\n", Encoding.UTF8);
-            }
-            Console.WriteLine($"[Init] 已创建保存文件: {savePath}");
+            WriteLog($"[Save] 保存失败: {ex.Message}", true);
         }
     }
 
     // 主要工作方法
-    public async Task Work(string sourcePath, string targetSavePath)
+    public async Task Work(string sourcePath, string targetSavePath, string targetLogPath = null)
     {
-        Console.WriteLine($"\n[Work] 开始处理...");
-        Console.WriteLine($"  图源路径: {sourcePath}");
-        Console.WriteLine($"  保存路径: {targetSavePath}");
+        // 设置保存路径
+        if (!string.IsNullOrEmpty(targetSavePath))
+            savePath = targetSavePath;
+        
+        // 设置日志路径
+        if (!string.IsNullOrEmpty(targetLogPath))
+            LogIt(targetLogPath);
+        
+        WriteLog($"\n[Work] 开始处理...");
+        WriteLog($"  图源路径: {sourcePath}");
+        WriteLog($"  保存路径: {savePath}");
+        WriteLog($"  日志路径: {logPath ?? "(控制台)"}");
         
         // 检查浏览器是否初始化
         bool isBrowserReady = await Check();
         if (!isBrowserReady)
         {
-            Console.WriteLine("[Work] 浏览器未就绪，尝试初始化...");
+            WriteLog("[Work] 浏览器未就绪，尝试初始化...");
             await Initweb();
             isBrowserReady = await Check();
             if (!isBrowserReady)
             {
-                Console.WriteLine("[Work] ❌ 浏览器初始化失败，无法继续");
+                WriteLog("[Work] ❌ 浏览器初始化失败，无法继续", true);
                 return;
             }
         }
-        
-        // 确保保存路径文件存在
-        EnsureSaveFileExists(targetSavePath);
         
         // 检测sourcePath是文件夹还是单文件
         bool isDirectory = Directory.Exists(sourcePath);
@@ -371,21 +346,21 @@ class Crawler
         
         if (!isDirectory && !isFile)
         {
-            Console.WriteLine($"[Work] ❌ 路径无效: {sourcePath}");
+            WriteLog($"[Work] ❌ 路径无效: {sourcePath}", true);
             return;
         }
         
         if (isFile)
         {
             // 单图处理
-            Console.WriteLine("\n[Work] 检测到单张图片");
-            await Reco(sourcePath);
-            await SaveResult(sourcePath, targetSavePath);
+            WriteLog("\n[Work] 检测到单张图片");
+            var result = await Reco(sourcePath);
+            await SaveResult(sourcePath, result);
         }
         else if (isDirectory)
         {
             // 文件夹批量处理
-            Console.WriteLine("\n[Work] 检测到文件夹，开始批量处理...");
+            WriteLog("\n[Work] 检测到文件夹，开始批量处理...");
             var imageFiles = Directory.GetFiles(sourcePath)
                 .Where(f => IsValidImageExtension(f))
                 .ToList();
@@ -394,29 +369,29 @@ class Crawler
                 .Where(f => !IsValidImageExtension(f))
                 .ToList();
             
-            Console.WriteLine($"  有效图片: {imageFiles.Count} 张");
-            Console.WriteLine($"  无效文件: {invalidFiles.Count} 个（已跳过）");
+            WriteLog($"  有效图片: {imageFiles.Count} 张");
+            WriteLog($"  无效文件: {invalidFiles.Count} 个（已跳过）");
             
             // 记录无效文件
             if (invalidFiles.Any())
             {
                 foreach (var invalidFile in invalidFiles)
                 {
-                    LastResult = new RecognitionResult { Valid = false, Wrong = $"后缀错了（{Path.GetExtension(invalidFile)}）" };
-                    await SaveResult(invalidFile, targetSavePath);
+                    var result = new RecognitionResult(false, $"后缀错了（{Path.GetExtension(invalidFile)}）");
+                    await SaveResult(invalidFile, result);
                 }
             }
             
             // 处理有效图片
             for (int i = 0; i < imageFiles.Count; i++)
             {
-                Console.WriteLine($"\n[进度] ({i+1}/{imageFiles.Count})");
-                await Reco(imageFiles[i]);
-                await SaveResult(imageFiles[i], targetSavePath);
+                WriteLog($"\n[进度] ({i+1}/{imageFiles.Count})");
+                var result = await Reco(imageFiles[i]);
+                await SaveResult(imageFiles[i], result);
             }
         }
         
-        Console.WriteLine($"\n[Work] ✅ 处理完成！结果保存至: {targetSavePath}");
+        WriteLog($"\n[Work] ✅ 处理完成！结果保存至: {savePath}");
     }
     
     // 关闭浏览器
@@ -424,8 +399,7 @@ class Crawler
     {
         if (browser != null) await browser.CloseAsync();
         playwright?.Dispose();
-        Console.WriteLine("[Close] 浏览器已关闭");
+        WriteLog("[Close] 浏览器已关闭");
     }
 }
 
-// 测试代码
